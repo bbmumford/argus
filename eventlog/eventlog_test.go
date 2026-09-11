@@ -53,30 +53,30 @@ func TestNewEventLogger_RequiresStoreAndEncryptor(t *testing.T) {
 	}
 }
 
-func TestLogEvent_UserCoercion(t *testing.T) {
+func TestLogEvent_SubjectCoercion(t *testing.T) {
 	for _, tc := range []struct {
-		userID, kind string
-		wantNil      bool
+		subject, kind string
+		wantNil       bool
 	}{
 		{"", "standard", true},
 		{"system", "standard", true},
 		{"nil", "standard", true},
 		{"null", "standard", true},
 		{"  ", "standard", true},
-		{"real-user", "system", true}, // kind=system coerces even a real user
+		{"real-user", "system", true}, // kind=system coerces even a real subject
 		{"real-user", "standard", false},
 	} {
 		store := &fakeStore{}
 		l := newLogger(t, store, &fakeEnc{})
-		if err := l.LogEvent(context.Background(), "acme", "app", "ev", "d", tc.userID, "", "", "", tc.kind); err != nil {
-			t.Fatalf("LogEvent(%q,%q): %v", tc.userID, tc.kind, err)
+		if err := l.LogEvent(context.Background(), "acme", "app", "ev", "d", tc.subject, "", "", "", tc.kind); err != nil {
+			t.Fatalf("LogEvent(%q,%q): %v", tc.subject, tc.kind, err)
 		}
-		gotNil := store.last.UserID == nil
+		gotNil := store.last.Subject == nil
 		if gotNil != tc.wantNil {
-			t.Fatalf("userID=%q kind=%q → UserID nil=%v, want %v", tc.userID, tc.kind, gotNil, tc.wantNil)
+			t.Fatalf("subject=%q kind=%q → Subject nil=%v, want %v", tc.subject, tc.kind, gotNil, tc.wantNil)
 		}
-		if !tc.wantNil && *store.last.UserID != "real-user" {
-			t.Fatalf("expected real-user, got %q", *store.last.UserID)
+		if !tc.wantNil && *store.last.Subject != "real-user" {
+			t.Fatalf("expected real-user, got %q", *store.last.Subject)
 		}
 	}
 }
@@ -97,7 +97,7 @@ func TestLogEvent_EncryptsPIIUnderAuditDomain(t *testing.T) {
 	if enc.calls != 2 {
 		t.Fatalf("expected 2 encrypt calls (ip+details), got %d", enc.calls)
 	}
-	if store.last.Owner != "acme" || store.last.TimeUnix != 42 || store.last.Kind != "standard" {
+	if store.last.Partition != "acme" || store.last.TimeUnix != 42 || store.last.Kind != "standard" {
 		t.Fatalf("event shape wrong: %+v", store.last)
 	}
 }
@@ -125,6 +125,22 @@ func TestLogEvent_CryptoFailure_FailsClosed(t *testing.T) {
 	}
 }
 
-func TestLogAsync_NoPanic(t *testing.T) {
-	LogAsync("ev", "desc", "u", "ip", "ua", "{}") // console fallback; must not panic
+// TestLogEvent_RefusesAnEmptyPartition: the refusal must come before the encryptor or the store is
+// reached, and the same call with a partition must write.
+func TestLogEvent_RefusesAnEmptyPartition(t *testing.T) {
+	store := &fakeStore{}
+	enc := &fakeEnc{}
+	l := newLogger(t, store, enc)
+	if err := l.LogEvent(context.Background(), "", "app", "ev", "d", "u1", "1.2.3.4", "ua", "x"); !errors.Is(err, ErrPartitionRequired) {
+		t.Fatalf("LogEvent with no partition = %v, want ErrPartitionRequired", err)
+	}
+	if store.writes != 0 || enc.calls != 0 {
+		t.Fatalf("a refused event reached the encryptor (%d) or the store (%d)", enc.calls, store.writes)
+	}
+	if err := l.LogEvent(context.Background(), "acme", "app", "ev", "d", "u1", "1.2.3.4", "ua", "x"); err != nil {
+		t.Fatalf("LogEvent in a partition: %v", err)
+	}
+	if store.writes != 1 || store.last.Partition != "acme" {
+		t.Fatalf("the partitioned event was not written as given: writes=%d last=%+v", store.writes, store.last)
+	}
 }

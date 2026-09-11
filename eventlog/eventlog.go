@@ -1,61 +1,62 @@
 // Package eventlog is the persistent, encrypted audit-event sink of the argus observability
 // module. It persists audit events (who/what/when + PII) to a consumer-supplied store, with the
 // PII fields (IP address, details) encrypted through a consumer-supplied encryptor — both
-// injected interfaces, so the sink is store- and crypto-agnostic (extracted from HSTLES
-// platform/logging, whose *sql.DB + security/encryption couplings are lifted here).
+// injected interfaces, so the sink is store- and crypto-agnostic.
 //
-// Scope-agnostic: the event's Owner is an OPAQUE owner-scope (was a baked tenantID); the sink
-// never interprets it. Capability-preserving: the source's user-coercion (system/unknown users
-// stored as NULL, FK-safe), the mandatory PII encryption ("audit" domain), and the async console
-// fallback are all retained.
+// Every event is filed under a partition, and a subject when a person acted. Both are opaque
+// strings the sink never interprets; an event with no partition is refused before anything is
+// encrypted or written.
 package eventlog
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 )
 
-// AuditDomain is the encryption domain the source seals PII under; preserved verbatim so a
-// consumer's Encryptor keys the same domain.
+// AuditDomain is the encryption domain PII is sealed under, so a consumer's Encryptor keys one
+// domain for every audit field.
 const AuditDomain = "audit"
 
-// Event is one audit-event record. Owner is the opaque owner-scope. UserID is nil for
-// system/unknown actors (FK-safe). IPAddress and Details arrive ALREADY encrypted when an
-// encryptor is configured — the store persists them as given.
+// ErrPartitionRequired is returned by LogEvent for an empty partition. The check runs before any
+// field is encrypted or the store is reached, so no event is ever written unpartitioned.
+var ErrPartitionRequired = errors.New("eventlog: partition is required")
+
+// Event is one audit-event record. Subject is nil for system/unknown actors, so a store with a
+// foreign key on it writes NULL rather than a dangling id. IPAddress and Details arrive ALREADY
+// encrypted — the store persists them as given.
 type Event struct {
-	Owner     string  // opaque owner-scope (was tenantID) — the sink interprets nothing
+	Partition string
 	App       string
 	Type      string
 	Kind      string // "standard" (default) or "system"
 	Desc      string
 	TimeUnix  int64
-	UserID    *string // nil ⇒ SQL NULL (system/unknown), avoiding FK violations
-	IPAddress string  // encrypted under AuditDomain when an Encryptor is configured
+	Subject   *string // nil ⇒ SQL NULL (system/unknown actor)
+	IPAddress string  // encrypted under AuditDomain
 	UserAgent string
-	Details   string // encrypted under AuditDomain when an Encryptor is configured
+	Details   string // encrypted under AuditDomain
 }
 
 // EventStore persists audit events. Injected — the consumer implements it over any store (an SQL
 // events table, tursokv, …). Store-specific concerns (e.g. FK diagnostics) live in the impl; the
-// user-coercion that PREVENTS the FK problem is done here, in the neutral layer.
+// subject coercion that prevents the FK problem is done here, in the neutral layer.
 type EventStore interface {
 	WriteEvent(ctx context.Context, e Event) error
 }
 
 // Encryptor seals a plaintext field for a named domain. Injected — the consumer wires the real
-// crypto (e.g. security/encryption). Returning an error fails the whole LogEvent CLOSED, so PII
-// is never persisted in the clear on a crypto failure.
+// crypto. Returning an error fails the whole LogEvent CLOSED, so PII is never persisted in the
+// clear on a crypto failure.
 type Encryptor interface {
 	Encrypt(plaintext, domain string) (ciphertext string, err error)
 }
 
 // EventLogger is the receiver-bound sink: a store + an encryptor, both required. Requiring the
-// encryptor preserves the source's security posture (audit PII is always encrypted) — a
-// deployment that genuinely wants plaintext must pass an explicit no-op encryptor, never omit it.
+// encryptor keeps audit PII always encrypted — a deployment that genuinely wants plaintext must
+// pass an explicit no-op encryptor, never omit it.
 type EventLogger struct {
 	store EventStore
 	enc   Encryptor
@@ -78,24 +79,27 @@ func NewEventLogger(store EventStore, enc Encryptor, clock func() int64) (*Event
 	return &EventLogger{store: store, enc: enc, now: clock}, nil
 }
 
-// LogEvent writes one audit event: coerces the user (system/unknown → NULL), encrypts the PII
-// fields under AuditDomain, and persists via the store. Preserves the source's LogEvent exactly,
-// store- and crypto-agnostic. Non-empty eventKind[0] overrides the default "standard".
-func (l *EventLogger) LogEvent(ctx context.Context, owner, app, event, desc, userID, ipAddress, userAgent, details string, eventKind ...string) error {
+// LogEvent writes one audit event filed under partition: it refuses an empty partition, coerces
+// the subject (system/unknown → NULL), encrypts the PII fields under AuditDomain, and persists via
+// the store. Non-empty eventKind[0] overrides the default "standard".
+func (l *EventLogger) LogEvent(ctx context.Context, partition, app, event, desc, subject, ipAddress, userAgent, details string, eventKind ...string) error {
 	if l == nil || l.store == nil || l.enc == nil {
 		return errors.New("eventlog: logger not configured")
+	}
+	if partition == "" {
+		return ErrPartitionRequired
 	}
 	kind := "standard"
 	if len(eventKind) > 0 && eventKind[0] != "" {
 		kind = eventKind[0]
 	}
 
-	// Coerce the user: NULL for system/unknown to avoid FK violations (the source's fix).
-	trimmed := strings.TrimSpace(userID)
-	var user *string
+	// NULL for system/unknown actors, so a foreign key on the subject never sees a placeholder id.
+	trimmed := strings.TrimSpace(subject)
+	var actor *string
 	if !(trimmed == "" || strings.EqualFold(trimmed, "system") || strings.EqualFold(trimmed, "nil") ||
 		strings.EqualFold(trimmed, "null") || strings.EqualFold(kind, "system")) {
-		user = &trimmed
+		actor = &trimmed
 	}
 
 	// Encrypt PII under the audit domain; a crypto error fails the whole write CLOSED.
@@ -113,13 +117,13 @@ func (l *EventLogger) LogEvent(ctx context.Context, owner, app, event, desc, use
 	}
 
 	if err := l.store.WriteEvent(ctx, Event{
-		Owner:     owner,
+		Partition: partition,
 		App:       app,
 		Type:      event,
 		Kind:      kind,
 		Desc:      desc,
 		TimeUnix:  l.now(),
-		UserID:    user,
+		Subject:   actor,
 		IPAddress: encIP,
 		UserAgent: userAgent,
 		Details:   encDetails,
@@ -127,17 +131,4 @@ func (l *EventLogger) LogEvent(ctx context.Context, owner, app, event, desc, use
 		return fmt.Errorf("eventlog: write event: %w", err)
 	}
 	return nil
-}
-
-// LogAsync is the source's deprecated console fallback (real logging routes to the event store).
-// Preserved for backward compatibility; emits a single structured line via the standard logger.
-func LogAsync(name, description, userID, ip, ua, meta string, eventKind ...string) {
-	kind := "standard"
-	if len(eventKind) > 0 && eventKind[0] != "" {
-		kind = eventKind[0]
-	}
-	if name == "" {
-		name = "log"
-	}
-	log.Printf("[%s] %s: %s | user=%s ip=%s ua=%s meta=%s kind=%s", kind, name, description, userID, ip, ua, meta, kind)
 }
