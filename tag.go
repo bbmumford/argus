@@ -89,6 +89,24 @@ func TagEnabled(tag string) bool {
 	return false
 }
 
+// TagNamed reports whether the effective DEBUG list names tag itself. Unlike
+// TagEnabled it is not opened by the "*" wildcard, by a prefix wildcard such as
+// "x.*", or by the SetEnabled / Configure global toggle, so a feature gated on
+// it opens only when an operator writes its exact tag. It is for a surface that
+// must not open as a side effect of DEBUG=* or of a namespace-wide wildcard, such
+// as diagnostics mounted on a public router.
+func TagNamed(tag string) bool {
+	if tag == "" {
+		return false
+	}
+	for _, t := range parsedTags() {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
 // parsedTags returns the current effective DEBUG tag list. If
 // SetEnabled / Configure overrode the environment at runtime, that
 // override takes precedence; otherwise the value reflects the DEBUG
