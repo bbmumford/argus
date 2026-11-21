@@ -64,10 +64,20 @@ func SetEnabled(enabled bool) {
 	refreshLoggers()
 }
 
-// IsEnabled reports whether the legacy "everything on" toggle is set.
-// Prefer TagEnabled("<namespace>") when checking a specific feature.
+// IsEnabled reports whether every namespace and feature is on: the
+// SetEnabled / Configure toggle is set, or the effective DEBUG list holds
+// "*". These are the two ways TagEnabled opens for every tag. Prefer
+// TagEnabled("<namespace>") when checking a specific feature.
 func IsEnabled() bool {
-	return forceAllEnabled.Load()
+	if forceAllEnabled.Load() {
+		return true
+	}
+	for _, t := range parsedTags() {
+		if t == wildcardTag {
+			return true
+		}
+	}
+	return false
 }
 
 // New creates (or returns the cached) namespaced debug Logger. The
