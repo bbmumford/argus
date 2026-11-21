@@ -9,41 +9,64 @@ package argus
 
 import (
 	"log"
+	"net"
 	"net/http"
-
-	// Import for side-effect: registers /debug/pprof/* on http.DefaultServeMux.
-	// We never serve DefaultServeMux on a publicly-reachable address — the
-	// pprof goroutine below binds to a Fly-internal port (:6060) that's
-	// deliberately omitted from each endpoint's fly.toml [[services]] map,
-	// so Fly's edge proxy never routes to it. Access is via
-	// `flyctl proxy 6060:6060 -a <app>` from a developer machine, which
-	// rides the Fly wireguard mesh.
-	_ "net/http/pprof"
+	"net/http/pprof"
+	"os"
+	"strings"
 )
 
-// pprofAddr is the bind address for the pprof HTTP server. :6060 is the
-// Go community convention. Bound to all interfaces so flyctl proxy /
-// the Fly wireguard mesh can reach it; never declared in fly.toml
-// services, so the public Fly edge proxy ignores it.
-const pprofAddr = ":6060"
+// pprofPort is the pprof server's port, the Go community convention.
+const pprofPort = "6060"
+
+// pprofAddr is the one address the pprof server binds, chosen once from the process environment by
+// pprofBindAddr. The feature registration below names it, and startPprof listens on it.
+var pprofAddr = pprofBindAddr(os.Getenv)
+
+// pprofListen opens the pprof server's listener; net.Listen outside a test.
+var pprofListen = net.Listen
+
+// pprofBindAddr chooses the pprof server's address: the host's private network address when
+// FLY_PRIVATE_IP names one (a Fly Machine's 6PN address, which `flyctl proxy 6060:6060 -a <app>`
+// reaches over the organisation's WireGuard network), and loopback otherwise. An address that is
+// unspecified, public or not an IP is never chosen, so the server never listens on every interface
+// or a public one: a host with no private network address serves pprof to its own processes only.
+// getenv is os.Getenv outside a test.
+func pprofBindAddr(getenv func(string) string) string {
+	if ip := net.ParseIP(strings.TrimSpace(getenv("FLY_PRIVATE_IP"))); ip != nil && ip.IsPrivate() {
+		return net.JoinHostPort(ip.String(), pprofPort)
+	}
+	return net.JoinHostPort("127.0.0.1", pprofPort)
+}
 
 func init() {
 	Register(Feature{
 		Tag:   "pprof",
-		Desc:  "Go pprof HTTP server on " + pprofAddr + " (Fly-internal; access via `flyctl proxy 6060:6060 -a <app>`)",
+		Desc:  "Go pprof HTTP server on " + pprofAddr + " (the host's private network address, else loopback)",
 		Start: startPprof,
 	})
 }
 
-// startPprof launches the standard Go pprof HTTP server on a private
-// port. Wired through the Feature registry — invoked by debug.Start()
-// when the DEBUG env var contains "pprof" or "*". Idempotent because
-// net/http/pprof's init registers handlers on http.DefaultServeMux
-// exactly once; calling debug.Start() twice would call ListenAndServe
-// twice, but the second call returns "address already in use" and
-// exits cleanly with the existing server still up.
+// pprofMux serves the pprof handlers alone. Importing net/http/pprof also registers them on
+// http.DefaultServeMux; the pprof server serves this mux instead, so no handler another package
+// put on the default mux is reachable on the pprof port.
+func pprofMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	return mux
+}
+
+// startPprof starts the Go pprof HTTP server on pprofAddr, serving pprofMux. It is the pprof
+// feature's Start, which debug.Start() runs once when the DEBUG list holds "pprof" or "*". A
+// listener that cannot open is logged and the server does not start.
 //
-// What pprof exposes (when enabled):
+// The server answers anyone who can reach pprofAddr, without authentication, for as long as the
+// process runs: on a Fly Machine, any peer on the organisation's private network and a developer's
+// `flyctl proxy`; elsewhere, only processes on the host. What it exposes:
 //   - /debug/pprof/goroutine?debug=2 — full goroutine dump
 //   - /debug/pprof/heap            — heap allocation profile
 //   - /debug/pprof/profile         — 30 s CPU profile
@@ -52,21 +75,19 @@ func init() {
 //   - /debug/pprof/cmdline         — process argv (build args land here;
 //     treat as semi-sensitive)
 //
-// Usage from a developer machine when an endpoint is wedged:
+// Usage from a developer machine when a Fly endpoint is wedged:
 //
-//	flyctl proxy 6060:6060 -a bootstrap-hstles-com
+//	flyctl proxy 6060:6060 -a <app>
 //	curl http://localhost:6060/debug/pprof/goroutine?debug=2 > goroutines.txt
-//
-// The proxy only opens for the duration of the flyctl process, so the
-// endpoint isn't exposed even within the Fly org while pprof is enabled.
 func startPprof() {
+	ln, err := pprofListen("tcp", pprofAddr)
+	if err != nil {
+		log.Printf("[PPROF] not started on %s: %v", pprofAddr, err)
+		return
+	}
+	log.Printf("[PPROF] serving on %s", ln.Addr())
 	go func() {
-		log.Printf("[PPROF] starting on %s (Fly-internal only — flyctl proxy %s:6060 to access)",
-			pprofAddr, pprofAddr[1:])
-		// Pass http.DefaultServeMux explicitly so it's clear the registered
-		// handlers are the pprof package's, not anything from the rest of
-		// the program.
-		if err := http.ListenAndServe(pprofAddr, http.DefaultServeMux); err != nil {
+		if err := http.Serve(ln, pprofMux()); err != nil {
 			log.Printf("[PPROF] server exited: %v", err)
 		}
 	}()
