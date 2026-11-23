@@ -1,6 +1,6 @@
 # argus
 
-Runtime diagnostics for Go services, switched by one `DEBUG` environment variable that holds a list of tags.
+argus gives Go services runtime diagnostics, switched by one `DEBUG` environment variable that holds a list of tags.
 
 - **Debug loggers** per namespace. A logger whose namespace is off costs one atomic load.
 - **Debug features** that register themselves from `init()` and start together on one `Start()` call. The built-in `pprof` feature serves only the pprof handlers on port 6060 of the host's private address (`FLY_PRIVATE_IP`, when it names a private IP), else of loopback; it never listens on every interface.
@@ -44,6 +44,41 @@ events, err := eventlog.NewEventLogger(store, encryptor, nil)
 err = events.LogEvent(ctx, partition, app, "login", "signed in", subject, ip, userAgent, details)
 ```
 
-## Consumers
+## Dependencies
 
-ORBTR library (the endpoint spine calls `Start()`), io constellation, agent, tools and the node, relay and help endpoints, ai xyz, and the flyio package.
+None: argus uses only the standard library.
+
+## Used by
+
+Importers in the ORBTR estate:
+
+- `github.com/ORBTR/Library/endpoint` (the endpoint spine calls `Start()`), and
+  `audit` in `github.com/ORBTR/Library/agent`, `component/ipc`,
+  `component/keyprotect`, `component/serviceunit`, `component/tlspin`,
+  `mesh/wire`, `plugins`, `selfupdate`, `trustchain/custody` and more.
+- `github.com/ORBTR/constellation/domain/foundation/notification` (root) and
+  `domain/identity/provisioning/store`,
+  `domain/networking/remote_access/signaling` (`audit`).
+- `github.com/ORBTR/agent/systempart` and `systempart/wire` (`audit`).
+- `github.com/ORBTR/relay.orbtr.io` (root and `audit`),
+  `github.com/ORBTR/node.orbtr.io` (`audit`) and, in its tests,
+  `github.com/ORBTR/help.orbtr.io`.
+- `github.com/bbmumford/flyio`.
+
+## Platforms and build
+
+Pure Go, no cgo. The `pprof` feature (`pprof.go`) builds everywhere but js;
+the rest of the module builds everywhere. The module's `go` directive is
+1.25.0.
+
+## Licence
+
+MIT. Copyright (c) 2026 Brandon Miller-Mumford. The full text is in
+[LICENSE](LICENSE).
+
+## Contributing
+
+[AGENTS.md](AGENTS.md) holds the repository's two rules, for people and coding
+agents alike: no temporary documents in the repository, and conventional commit
+messages that stand on their own. [CLAUDE.md](CLAUDE.md) imports it for Claude
+Code.
