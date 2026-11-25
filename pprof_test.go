@@ -63,7 +63,11 @@ func TestStartPprofServesOnlyPprofOnItsAddress(t *testing.T) {
 		t.Fatalf("startPprof listened on %q, want pprofAddr %q", asked, pprofAddr)
 	}
 	ln := <-served
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() {
+		if err := ln.Close(); err != nil {
+			t.Errorf("ln.Close: %v", err)
+		}
+	})
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	get := func(path string) int {
@@ -72,7 +76,9 @@ func TestStartPprofServesOnlyPprofOnItsAddress(t *testing.T) {
 			t.Fatalf("GET %s: %v", path, err)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("resp.Body.Close: %v", err)
+		}
 		return resp.StatusCode
 	}
 	if code := get("/debug/pprof/"); code != http.StatusOK {

@@ -97,8 +97,8 @@ func (l *EventLogger) LogEvent(ctx context.Context, partition, app, event, desc,
 	// NULL for system/unknown actors, so a foreign key on the subject never sees a placeholder id.
 	trimmed := strings.TrimSpace(subject)
 	var actor *string
-	if !(trimmed == "" || strings.EqualFold(trimmed, "system") || strings.EqualFold(trimmed, "nil") ||
-		strings.EqualFold(trimmed, "null") || strings.EqualFold(kind, "system")) {
+	if trimmed != "" && !strings.EqualFold(trimmed, "system") && !strings.EqualFold(trimmed, "nil") &&
+		!strings.EqualFold(trimmed, "null") && !strings.EqualFold(kind, "system") {
 		actor = &trimmed
 	}
 

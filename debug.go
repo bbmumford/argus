@@ -129,7 +129,7 @@ func (l *Logger) Printf(format string, args ...interface{}) {
 	if !l.isEnabled() {
 		return
 	}
-	
+
 	msg := fmt.Sprintf(format, args...)
 	l.logger.Printf("[DEBUG:%s] %s", l.namespace, msg)
 }
@@ -139,7 +139,7 @@ func (l *Logger) Println(args ...interface{}) {
 	if !l.isEnabled() {
 		return
 	}
-	
+
 	msg := fmt.Sprint(args...)
 	l.logger.Printf("[DEBUG:%s] %s", l.namespace, msg)
 }
@@ -191,15 +191,15 @@ func DebugInfo() string {
 	defer mu.Unlock()
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Force-all enabled: %v\n", forceAllEnabled.Load()))
-	b.WriteString(fmt.Sprintf("DEBUG tags: %v\n", parsedTags()))
-	b.WriteString(fmt.Sprintf("Registered namespaces: %d\n", len(loggers)))
+	fmt.Fprintf(&b, "Force-all enabled: %v\n", forceAllEnabled.Load())
+	fmt.Fprintf(&b, "DEBUG tags: %v\n", parsedTags())
+	fmt.Fprintf(&b, "Registered namespaces: %d\n", len(loggers))
 	for ns, logger := range loggers {
-		b.WriteString(fmt.Sprintf("  - %s: enabled=%v\n", ns, logger.enabled.Load()))
+		fmt.Fprintf(&b, "  - %s: enabled=%v\n", ns, logger.enabled.Load())
 	}
-	b.WriteString(fmt.Sprintf("Registered features: %d\n", len(features)))
+	fmt.Fprintf(&b, "Registered features: %d\n", len(features))
 	for _, f := range features {
-		b.WriteString(fmt.Sprintf("  - %s: enabled=%v — %s\n", f.Tag, TagEnabled(f.Tag), f.Desc))
+		fmt.Fprintf(&b, "  - %s: enabled=%v — %s\n", f.Tag, TagEnabled(f.Tag), f.Desc)
 	}
 	return b.String()
 }
@@ -209,7 +209,7 @@ func (l *Logger) Benchmark(name string, start time.Time) {
 	if !l.isEnabled() {
 		return
 	}
-	
+
 	elapsed := time.Since(start)
 	l.Printf("[BENCHMARK] %s took %v", name, elapsed)
 }
@@ -219,10 +219,10 @@ func (l *Logger) Trace(funcName string) func() {
 	if !l.isEnabled() {
 		return func() {}
 	}
-	
+
 	start := time.Now()
 	l.Printf("[TRACE] → %s", funcName)
-	
+
 	return func() {
 		l.Printf("[TRACE] ← %s (duration: %v)", funcName, time.Since(start))
 	}
